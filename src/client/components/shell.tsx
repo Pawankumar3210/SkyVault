@@ -48,12 +48,14 @@ interface ShellProps {
   dark: boolean;
   actorId: string;
   mobileNav: boolean;
+  collapsed: boolean;
   searchOpen: boolean;
   searchQuery: string;
   searchHits: SearchHit[];
   notificationsOpen: boolean;
   quickOpen: boolean;
   setMobileNav: (value: boolean) => void;
+  onToggleNav: () => void;
   setDark: (value: boolean) => void;
   setActorId: (value: string) => void;
   setSearchOpen: (value: boolean) => void;
@@ -68,20 +70,20 @@ interface ShellProps {
 }
 
 export function Shell(props: ShellProps) {
-  const { children, snapshot, section, activeProjectCount, demo, dark, actorId, mobileNav, searchOpen, searchQuery, searchHits,
-    notificationsOpen, quickOpen, setMobileNav, setDark, setActorId, setSearchOpen, setSearchQuery, setNotificationsOpen,
+  const { children, snapshot, section, activeProjectCount, demo, dark, actorId, mobileNav, collapsed, searchOpen, searchQuery, searchHits,
+    notificationsOpen, quickOpen, setMobileNav, onToggleNav, setDark, setActorId, setSearchOpen, setSearchQuery, setNotificationsOpen,
     setQuickOpen, navigate, openModal, uploadFiles, currentTitle, selectedWorkSubject } = props;
 
   const go = (path: string) => { navigate(path); setMobileNav(false); setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); };
   const breadcrumb = currentTitle ?? sectionTitles[section];
+  const navHidden = mobileNav || collapsed;
 
-  return <div className="app-frame">
+  return <div className={`app-frame ${collapsed ? 'is-collapsed' : ''}`}>
     {mobileNav && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
     <aside className={`sidebar ${mobileNav ? 'is-open' : ''}`}>
       <button className="brand" onClick={() => go('/')} aria-label="Sky Vault overview">
         <span className="brand-symbol" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
         <span className="brand-copy"><strong>SKY VAULT</strong><small>ACADEMIC COMMAND</small></span>
-        <IconButton className="mobile-only" label="Close navigation" icon={X} onClick={() => setMobileNav(false)} />
       </button>
 
       <button className="semester-tile" onClick={() => go('/settings')} title="Open workspace settings">
@@ -109,7 +111,7 @@ export function Shell(props: ShellProps) {
 
     <div className="main-frame">
       <header className="topbar">
-        <IconButton className="mobile-only" label="Open navigation" icon={Menu} onClick={() => setMobileNav(true)} />
+        <IconButton className={`nav-toggle ${navHidden ? 'is-on' : ''}`} label={navHidden ? 'Close navigation' : 'Open navigation'} icon={Menu} onClick={onToggleNav} />
         <div className="breadcrumb"><button onClick={() => go('/')}>Semester 5</button><ChevronRight size={13} /><span>{breadcrumb}</span></div>
         <div className="topbar-actions">
           <button className="search-trigger" onClick={() => setSearchOpen(!searchOpen)} aria-expanded={searchOpen}><Search size={15} /><span>Search workspace</span><kbd>⌘K</kbd></button>

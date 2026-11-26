@@ -49,6 +49,7 @@ export function App() {
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
   const [pendingTemplate, setPendingTemplate] = useState<TemplateRecord | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -69,6 +70,10 @@ export function App() {
   const selectedWork = snapshot?.workItems.find((item) => item.id === path[1] && !item.isDeleted) ?? null;
 
   const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(''), 3600); }, []);
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia('(max-width: 820px)').matches) setMobileNav((value) => !value);
+    else setSidebarCollapsed((value) => !value);
+  }, []);
   const refresh = useCallback(async () => {
     setLoading(true);
     try { setSnapshot(await loadWorkspace()); setError(''); }
@@ -542,8 +547,8 @@ export function App() {
 
   return <>
     <Shell snapshot={snapshot} section={activeSection} activeProjectCount={analytics.activeProjects} demo={demo} dark={dark} actorId={actorId}
-      mobileNav={mobileNav} searchOpen={searchOpen} searchQuery={searchQuery} searchHits={searchHits} notificationsOpen={notificationsOpen} quickOpen={quickOpen}
-      setMobileNav={setMobileNav} setDark={setDark} setActorId={setActorId} setSearchOpen={setSearchOpen} setSearchQuery={setSearchQuery}
+      mobileNav={mobileNav} collapsed={sidebarCollapsed} searchOpen={searchOpen} searchQuery={searchQuery} searchHits={searchHits} notificationsOpen={notificationsOpen} quickOpen={quickOpen}
+      setMobileNav={setMobileNav} onToggleNav={toggleSidebar} setDark={setDark} setActorId={setActorId} setSearchOpen={setSearchOpen} setSearchQuery={setSearchQuery}
       setNotificationsOpen={setNotificationsOpen} setQuickOpen={setQuickOpen} navigate={navigate} openModal={openModal}
       uploadFiles={async (files) => { await uploadFiles(files); }} currentTitle={selectedWork?.title} selectedWorkSubject={snapshot.subjects.find((subject) => subject.id === selectedWork?.subjectId)}>
       {activeSection === 'home' && <Dashboard snapshot={snapshot} analytics={analytics} onAdd={openModal} onNavigate={navigate} onSubjectOpen={openSubjectWork} />}
