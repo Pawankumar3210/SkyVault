@@ -1,6 +1,6 @@
 import { Storage } from '@google-cloud/storage';
 import type { AppConfig } from '../config';
-import type { ObjectStorage } from './memory';
+import { PENDING_UPLOAD_PREFIX, type CleanupOptions, type CleanupResult, type ObjectStorage } from './memory';
 
 export class GcsObjectStorage implements ObjectStorage {
   kind = 'gcs' as const;
@@ -62,5 +62,18 @@ export class GcsObjectStorage implements ObjectStorage {
   async bucketExists(): Promise<boolean> {
     const [exists] = await this.bucket.exists();
     return exists;
+  }
+
+  async cleanupExpiredUploads({ cutoff, preservePaths }: CleanupOptions): Promise<CleanupResult> {
+    const [files] = await this.bucket.getFiles({ prefix: PENDING_UPLOAD_PREFIX });
+    const deletedPaths: string[] = [];
+    for (const file of files) {
+      if (preservePaths.has(file.name)) continue;
+      const timeCreated = file.metadata.timeCreated ? new Date(String(file.metadata.timeCreated)) : null;
+      if (!timeCreated || Number.isNaN(timeCreated.getTime()) || timeCreated >= cutoff) continue;
+      await file.delete({ ignoreNotFound: true });
+      deletedPaths.push(file.name);
+    }
+    return { deletedPaths, expiredTokens: 0 };
   }
 }

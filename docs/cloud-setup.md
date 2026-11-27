@@ -35,14 +35,23 @@ WORKSPACE_STORAGE_SOFT_LIMIT_MB=500
 UPLOAD_WARNING_PERCENTAGE=70
 UPLOAD_URL_EXPIRY_SECONDS=300
 DOWNLOAD_URL_EXPIRY_SECONDS=900
+MAX_RETAINED_VERSIONS=5
+PENDING_UPLOAD_TTL_SECONDS=3600
+BACKUP_RETENTION_DAYS=7
 CORS_ALLOWED_ORIGIN=http://localhost:5173
 ```
 
 JSON must be a single valid value. The server validates required configuration at startup/API health. Restart the API after changes. Local Cloud Mode needs bucket CORS to allow `http://localhost:5173`.
 
+`PENDING_UPLOAD_TTL_SECONDS` controls when abandoned uploads are eligible for cleanup; keep it longer than `UPLOAD_URL_EXPIRY_SECONDS`. `BACKUP_RETENTION_DAYS` controls how long pre-action workspace snapshots stay in the `workspaceBackups` Firestore collection.
+
+The maintenance cleanup needs `storage.objects.list` and `storage.objects.delete` on the bucket, in addition to the upload/download signing permissions. A backup snapshot is a single Firestore document, so keeping retention short and workspace records bounded avoids the 1 MiB per-document limit.
+
 ## 5. Verify Cloud Mode
 
 Check `GET /api/health` and verify mode `cloud`, configuration status `true`, and storage `gcs`. Then create a test subject, upload a small permitted PDF, reload, download it, replace it, and inspect document versions. Remove test records/files afterward. Do not claim cloud verification until these real operations succeed.
+
+With real credentials configured for the API process, run `npm run test:cloud`. The script refuses to run unless `APP_MODE=cloud` and all configuration checks pass. It verifies the bucket exists, performs a small Firestore write/read/delete round-trip in the `smokeTests` collection, generates v4 signed upload and download URLs without printing them, and runs `POST /api/maintenance/cleanup` logic. It prints one `PASS` or `FAIL` line per check and exits nonzero on any failure. Do not run it without credentials, and never claim it passed unless you ran it yourself against the intended project. Cleanup may delete genuinely stale objects under the server-generated `pending/uploads/` prefix.
 
 ## 6. Usage and cost checks
 

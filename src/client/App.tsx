@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { BookOpen, Check, CheckSquare, CloudUpload, FileText, FolderKanban, ListTodo, ShieldAlert, Users } from 'lucide-react';
 import { buildAnalytics } from '@shared/analytics';
@@ -10,22 +10,34 @@ import type {
   Activity as ActivityRecord, Checklist, DocumentCategory, DocumentRecord, DocumentVersion, Subject, Task, TeamMember, TemplateRecord, WorkItem,
   WorkspaceSnapshot,
 } from '@shared/types';
-import { getDemoFile, isDemoMode, loadWorkspace, putDemoFile, request, resetDemoWorkspace, clearDemoWorkspace, saveDemo } from './services/workspace';
+import { getDemoFile, isDemoMode, loadWorkspace, putDemoFile, resetDemoWorkspace, clearDemoWorkspace, saveDemo } from './services/workspace';
 import type { DeleteKind, ModalKind, ModalTarget, Section, WorkView } from './contracts';
-import { Shell, type SearchHit } from './components/shell';
+import { sectionTitles, Shell, type SearchHit } from './components/shell';
 import { RecordForm } from './components/forms';
 import { Button, EmptyState, Modal } from './components/ui';
-import { Dashboard } from './pages/dashboard';
-import { WorkDetail, WorkPage } from './pages/work';
-import { SubjectsPage } from './pages/subjects';
-import { TeamPage } from './pages/team';
-import { VaultPage } from './pages/vault';
-import { ChecklistsPage, TemplatesPage } from './pages/templates';
-import { ActivityPage, CalendarPage } from './pages/activity';
-import { AnalyticsPage } from './pages/analytics';
-import { ArchivePage, SettingsPage } from './pages/system';
+import { Activity, Compass } from 'lucide-react';
+import { enqueueCloudMutation, listCloudMutations, removeCloudMutation, request, WorkspaceError } from './services/workspace';
+
+const Dashboard = lazy(() => import('./pages/dashboard').then((module) => ({ default: module.Dashboard })));
+const WorkDetail = lazy(() => import('./pages/work').then((module) => ({ default: module.WorkDetail })));
+const WorkPage = lazy(() => import('./pages/work').then((module) => ({ default: module.WorkPage })));
+const SubjectsPage = lazy(() => import('./pages/subjects').then((module) => ({ default: module.SubjectsPage })));
+const TeamPage = lazy(() => import('./pages/team').then((module) => ({ default: module.TeamPage })));
+const VaultPage = lazy(() => import('./pages/vault').then((module) => ({ default: module.VaultPage })));
+const ChecklistsPage = lazy(() => import('./pages/templates').then((module) => ({ default: module.ChecklistsPage })));
+const TemplatesPage = lazy(() => import('./pages/templates').then((module) => ({ default: module.TemplatesPage })));
+const ActivityPage = lazy(() => import('./pages/activity').then((module) => ({ default: module.ActivityPage })));
+const CalendarPage = lazy(() => import('./pages/activity').then((module) => ({ default: module.CalendarPage })));
+const AnalyticsPage = lazy(() => import('./pages/analytics').then((module) => ({ default: module.AnalyticsPage })));
+const ArchivePage = lazy(() => import('./pages/system').then((module) => ({ default: module.ArchivePage })));
+const SettingsPage = lazy(() => import('./pages/system').then((module) => ({ default: module.SettingsPage })));
 
 const sections: Section[] = ['home', 'projects', 'assignments', 'labs', 'subjects', 'team', 'vault', 'templates', 'checklists', 'calendar', 'analytics', 'archive', 'settings', 'activity'];
+
+interface ToastMessage {
+  message: string;
+  action?: { label: string; onClick: () => void };
+}
 
 function putSignedFile(url: string, file: File, mimeType: string, onProgress: (percentage: number) => void) {
   return new Promise<void>((resolve, reject) => {
@@ -44,12 +56,13 @@ export function App() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [toast, setToast] = useState('');
+  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null);
   const [pendingTemplate, setPendingTemplate] = useState<TemplateRecord | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('sky-vault-sidebar') === 'collapsed');
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.matchMedia('(max-width: 820px)').matches);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -64,50 +77,141 @@ export function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const demo = isDemoMode();
+  const snapshotRef = useRef<WorkspaceSnapshot | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const replaying = useRef(false);
 
   const path = location.pathname.split('/').filter(Boolean);
   const activeSection: Section = path[0] === 'work' ? 'projects' : sections.includes(path[0] as Section) ? path[0] as Section : 'home';
   const selectedWork = snapshot?.workItems.find((item) => item.id === path[1] && !item.isDeleted) ?? null;
 
-  const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(''), 3600); }, []);
-  const toggleSidebar = useCallback(() => {
-    if (window.matchMedia('(max-width: 820px)').matches) setMobileNav((value) => !value);
-    else setSidebarCollapsed((value) => !value);
+  const notify = useCallback((input: string | ToastMessage) => {
+    window.clearTimeout(toastTimer.current);
+    setToast(typeof input === 'string' ? { message: input } : input);
+    toastTimer.current = window.setTimeout(() => setToast(null), typeof input === 'string' && !input.includes('archive') ? 3600 : 8000);
   }, []);
+  const toggleSidebar = useCallback(() => {
+    if (isMobileViewport) setMobileNav((value) => !value);
+    else setSidebarCollapsed((value) => !value);
+  }, [isMobileViewport]);
   const refresh = useCallback(async () => {
     setLoading(true);
-    try { setSnapshot(await loadWorkspace()); setError(''); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load the workspace.'); }
+    try {
+      const next = await loadWorkspace();
+      snapshotRef.current = next;
+      setSnapshot(next);
+      setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load the workspace.'); }
     finally { setLoading(false); }
   }, []);
 
+  const replayQueued = useCallback(async () => {
+    if (demo || replaying.current || !navigator.onLine) return;
+    replaying.current = true;
+    try {
+      const queued = await listCloudMutations();
+      for (const item of queued.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+        try {
+          await request(item.path, { method: item.method, body: item.body });
+          await removeCloudMutation(item.id);
+        } catch (cause) {
+          if (cause instanceof WorkspaceError && cause.code === 'NETWORK_ERROR') break;
+          await removeCloudMutation(item.id);
+        }
+      }
+      await refresh();
+    } finally { replaying.current = false; }
+  }, [demo, refresh]);
+
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 820px)');
+    const sync = () => {
+      setIsMobileViewport(media.matches);
+      if (media.matches) setSidebarCollapsed(false);
+      else setMobileNav(false);
+    };
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('sky-vault-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { localStorage.setItem('sky-vault-actor', actorId); }, [actorId]);
+  useEffect(() => { localStorage.setItem('sky-vault-sidebar', sidebarCollapsed ? 'collapsed' : 'expanded'); }, [sidebarCollapsed]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setSearchOpen(true); }
-      if (event.key === 'Escape') { setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); setModal(null); setModalTarget(null); }
+      if (event.key !== 'Escape') return;
+      if (pendingTemplate) setPendingTemplate(null);
+      else if (modal) { setModal(null); setModalTarget(null); }
+      else if (quickOpen) setQuickOpen(false);
+      else if (searchOpen) setSearchOpen(false);
+      else if (notificationsOpen) setNotificationsOpen(false);
+      else setMobileNav(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [modal, notificationsOpen, pendingTemplate, quickOpen, searchOpen]);
+  useEffect(() => {
+    const onOnline = () => void replayQueued();
+    window.addEventListener('online', onOnline);
+    if (navigator.onLine) void replayQueued();
+    return () => window.removeEventListener('online', onOnline);
+  }, [replayQueued]);
 
   const persist = useCallback(async (next: WorkspaceSnapshot, message = 'Changes saved') => {
+    const previous = snapshotRef.current;
+    snapshotRef.current = next;
     setSnapshot(next);
-    if (demo) await saveDemo(next);
-    notify(message);
+    try {
+      if (demo) await saveDemo(next);
+      notify(message);
+    } catch (cause) {
+      snapshotRef.current = previous;
+      setSnapshot(previous);
+      notify({
+        message: cause instanceof Error ? cause.message : 'Could not save changes locally.',
+        action: {
+          label: 'Retry',
+          onClick: () => {
+            snapshotRef.current = next;
+            setSnapshot(next);
+            void saveDemo(next).then(() => notify(message)).catch(() => {
+              snapshotRef.current = previous;
+              setSnapshot(previous);
+              notify('The retry failed. Your previous workspace state was restored.');
+            });
+          },
+        },
+      });
+      throw cause;
+    }
   }, [demo, notify]);
 
   const selectedActor = snapshot?.members.find((member) => member.id === actorId && !member.isDeleted);
   const reportedActor = useMemo(() => ({ memberId: actorId || undefined, displayName: selectedActor?.name ?? '' }), [actorId, selectedActor?.name]);
 
-  const cloudAction = useCallback(async <T,>(apiPath: string, method: string, body?: unknown, message = 'Changes saved'): Promise<T | undefined> => {
+  const cloudAction = useCallback(async <T,>(apiPath: string, method: string, body?: unknown, message?: string): Promise<T | undefined> => {
     const payload = body && typeof body === 'object' && !Array.isArray(body) ? { ...(body as Record<string, unknown>), actor: reportedActor } : { actor: reportedActor };
-    const result = await request<T>(apiPath, { method, body: JSON.stringify(payload) });
-    await refresh();
-    notify(message);
-    return result;
+    const serialized = JSON.stringify(payload);
+    try {
+      const result = await request<T>(apiPath, { method, body: serialized });
+      await refresh();
+      if (message) notify(message);
+      return result;
+    } catch (cause) {
+      if (cause instanceof WorkspaceError && cause.code === 'NETWORK_ERROR') {
+        await enqueueCloudMutation(apiPath, method, serialized);
+        notify('Offline — this change is queued and will sync when the connection returns.');
+        return undefined;
+      }
+      if (cause instanceof WorkspaceError && cause.code === 'CONFLICT') {
+        await refresh();
+        throw new WorkspaceError('This record changed elsewhere. The latest version was loaded.', 'CONFLICT', 409);
+      }
+      throw cause;
+    }
   }, [notify, refresh, reportedActor]);
 
   const addActivity = (current: WorkspaceSnapshot, eventType: ActivityRecord['eventType'], description: string, entityType: string, entityId: string, subjectId: string | null = null): ActivityRecord => makeActivity({
@@ -141,7 +245,7 @@ export function App() {
         const data = { name: value('name'), code: value('code'), description: value('description'), color: value('color') || '#47C9FF' };
         if (modalTarget && 'color' in modalTarget) {
           if (demo) await persist({ ...snapshot, subjects: snapshot.subjects.map((entry) => entry.id === modalTarget.id ? { ...entry, ...data, updatedAt: now } : entry) }, 'Subject updated');
-          else await cloudAction(`/subjects/${modalTarget.id}`, 'PATCH', data, 'Subject updated');
+          else await cloudAction(`/subjects/${modalTarget.id}`, 'PATCH', { ...data, expectedUpdatedAt: modalTarget.updatedAt }, 'Subject updated');
         } else if (demo) {
           const item = newSubject(data, now);
           await persist({ ...snapshot, subjects: [...snapshot.subjects, item], activities: [addActivity(snapshot, 'subject_created', `Added subject ${item.name}.`, 'subject', item.id, item.id), ...snapshot.activities] }, 'Subject added');
@@ -166,7 +270,7 @@ export function App() {
             ...item, ...data, projectType: data.projectType as WorkItem['projectType'], status: String(data.status), priority: data.priority as WorkItem['priority'],
             startDate: data.startDate, dueDate: data.dueDate, teamMemberIds: data.teamMemberIds, projectLeadId: data.projectLeadId, updatedAt: now,
           } : item) }, 'Academic work updated');
-          else await cloudAction(`/work-items/${workTarget.id}`, 'PATCH', data, 'Academic work updated');
+          else await cloudAction(`/work-items/${workTarget.id}`, 'PATCH', { ...data, expectedUpdatedAt: workTarget.updatedAt }, 'Academic work updated');
         } else if (demo) {
           const item = newWorkItem(data as Parameters<typeof newWorkItem>[0], now);
           await persist({ ...snapshot, workItems: [item, ...snapshot.workItems], activities: [addActivity(snapshot, 'project_created', `Created ${type} “${item.title}”.`, 'work_item', item.id, item.subjectId), ...snapshot.activities] }, `${type[0].toUpperCase()}${type.slice(1)} created`);
@@ -178,7 +282,7 @@ export function App() {
         const memberTarget = modalTarget && 'email' in modalTarget ? modalTarget as TeamMember : null;
         if (memberTarget) {
           if (demo) await persist({ ...snapshot, members: snapshot.members.map((member) => member.id === memberTarget.id ? { ...member, ...data, updatedAt: now } : member) }, 'Teammate updated');
-          else await cloudAction(`/team-members/${memberTarget.id}`, 'PATCH', data, 'Teammate updated');
+          else await cloudAction(`/team-members/${memberTarget.id}`, 'PATCH', { ...data, expectedUpdatedAt: memberTarget.updatedAt }, 'Teammate updated');
         } else if (demo) {
           const member = newMember(data, now);
           await persist({ ...snapshot, members: [...snapshot.members, member], activities: [addActivity(snapshot, 'teammate_added', `Added teammate ${member.name}.`, 'member', member.id), ...snapshot.activities] }, 'Teammate added');
@@ -245,7 +349,7 @@ export function App() {
         const next = { ...item, ...patch, updatedAt: now, ...(patch.status === 'completed' || patch.status === 'submitted' ? { completedAt: now } : {}) };
         const event = patch.status && patch.status !== item.status ? 'status_updated' : 'project_edited';
         await persist({ ...snapshot, workItems: snapshot.workItems.map((work) => work.id === item.id ? next : work), activities: [addActivity(snapshot, event, `${item.title} updated${patch.status ? ` to ${patch.status.replaceAll('_', ' ')}` : ''}.`, 'work_item', item.id, item.subjectId), ...snapshot.activities] });
-      } else await cloudAction(`/work-items/${item.id}`, 'PATCH', patch);
+      } else await cloudAction(`/work-items/${item.id}`, 'PATCH', { ...patch, expectedUpdatedAt: item.updatedAt });
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'Could not update this item.'); }
   };
 
@@ -257,14 +361,36 @@ export function App() {
         const rows = tasks.filter((row) => row.workItemId === task.workItemId && !row.isDeleted);
         const progress = rows.length ? Math.round(rows.filter((row) => row.status === 'done').length / rows.length * 100) : 0;
         await persist({ ...snapshot, tasks, workItems: snapshot.workItems.map((item) => item.id === task.workItemId ? { ...item, progress } : item) });
-      } else await cloudAction(`/tasks/${task.id}`, 'PATCH', patch);
+      } else await cloudAction(`/tasks/${task.id}`, 'PATCH', { ...patch, expectedUpdatedAt: task.updatedAt });
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'Could not update this task.'); }
   };
 
   const updateChecklist = async (checklist: Checklist, items: Checklist['items']) => {
     if (!snapshot) return;
     if (demo) await persist({ ...snapshot, checklists: snapshot.checklists.map((row) => row.id === checklist.id ? { ...row, items, updatedAt: new Date().toISOString() } : row) });
-    else await cloudAction(`/checklists/${checklist.id}`, 'PATCH', { items });
+    else await cloudAction(`/checklists/${checklist.id}`, 'PATCH', { items, expectedUpdatedAt: checklist.updatedAt });
+  };
+
+  const restoreSoftDeleted = async (kind: DeleteKind, record: Subject | WorkItem | TeamMember | TemplateRecord | DocumentRecord) => {
+    const current = snapshotRef.current;
+    if (!current) return;
+    try {
+      if (demo) {
+        const unmark = <T extends { id: string }>(rows: T[]) => rows.map((row) => row.id === record.id ? { ...row, isDeleted: false, deletedAt: null, isArchived: false, archivedAt: null } : row);
+        const next: WorkspaceSnapshot = kind === 'subject' ? { ...current, subjects: unmark(current.subjects) }
+          : kind === 'work' ? { ...current, workItems: unmark(current.workItems) }
+            : kind === 'member' ? { ...current, members: unmark(current.members) }
+              : kind === 'template' ? { ...current, templates: unmark(current.templates) }
+                : { ...current, documents: unmark(current.documents) };
+        snapshotRef.current = next;
+        setSnapshot(next);
+        await saveDemo(next);
+        notify('Restore complete');
+      } else {
+        const endpoint = kind === 'subject' ? `/subjects/${record.id}/restore` : kind === 'work' ? `/work-items/${record.id}/restore` : kind === 'member' ? `/team-members/${record.id}/restore` : kind === 'template' ? `/templates/${record.id}/restore` : `/documents/${record.id}/restore`;
+        await cloudAction(endpoint, 'POST', {}, 'Restore complete');
+      }
+    } catch (cause) { notify(cause instanceof Error ? cause.message : 'Could not restore this record.'); }
   };
 
   const softDelete = async (kind: DeleteKind, record: Subject | WorkItem | TeamMember | TemplateRecord | DocumentRecord) => {
@@ -280,11 +406,12 @@ export function App() {
             : kind === 'member' ? { ...snapshot, members: mark(snapshot.members) }
               : kind === 'template' ? { ...snapshot, templates: mark(snapshot.templates) }
                 : { ...snapshot, documents: mark(snapshot.documents) };
-        await persist(changed, 'Moved to archive');
+        await persist(changed);
       } else {
         const endpoint = kind === 'subject' ? `/subjects/${record.id}` : kind === 'work' ? `/work-items/${record.id}` : kind === 'member' ? `/team-members/${record.id}` : kind === 'template' ? `/templates/${record.id}` : `/documents/${record.id}`;
-        await cloudAction(endpoint, 'DELETE', {}, 'Moved to archive');
+        await cloudAction(endpoint, 'DELETE', {});
       }
+      notify({ message: `“${label}” moved to archive`, action: { label: 'Undo', onClick: () => void restoreSoftDeleted(kind, record) } });
       if (kind === 'work' && 'type' in record && path[1] === record.id) navigate(`/${record.type === 'project' ? 'projects' : record.type === 'assignment' ? 'assignments' : 'labs'}`);
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'Could not remove this record.'); }
   };
@@ -374,7 +501,7 @@ export function App() {
     const displayName = window.prompt('Document display name', doc.displayName)?.trim();
     if (!displayName || displayName === doc.displayName) return;
     if (demo) await persist({ ...snapshot, documents: snapshot.documents.map((row) => row.id === doc.id ? { ...row, displayName, updatedAt: new Date().toISOString() } : row) }, 'Document renamed');
-    else await cloudAction(`/documents/${doc.id}`, 'PATCH', { displayName }, 'Document renamed');
+    else await cloudAction(`/documents/${doc.id}`, 'PATCH', { displayName, expectedUpdatedAt: doc.updatedAt }, 'Document renamed');
   };
 
   const replaceFile = async (doc: DocumentRecord, file: File) => {
@@ -460,29 +587,54 @@ export function App() {
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'Export failed.'); }
   };
 
+  const restoreDemoSnapshot = async (previous: WorkspaceSnapshot) => {
+    snapshotRef.current = previous;
+    setSnapshot(previous);
+    await saveDemo(previous);
+    notify('Workspace restored');
+  };
+
+  const notifyWorkspaceChange = async (message: string, previous: WorkspaceSnapshot) => {
+    if (demo) {
+      notify({ message, action: { label: 'Undo', onClick: () => void restoreDemoSnapshot(previous).catch(() => notify('Could not restore the workspace.')) } });
+      return;
+    }
+    try {
+      const backups = await request<{ id: string }[]>('/workspace/backups');
+      const backupId = backups[0]?.id;
+      notify(backupId
+        ? { message, action: { label: 'Undo', onClick: () => void cloudAction('/workspace/restore', 'POST', { backupId }, 'Workspace restored') } }
+        : message);
+    } catch { notify(message); }
+  };
+
   const importWorkspace = async (file: File) => {
     if (!snapshot) return;
+    const previous = snapshot;
     try {
       const parsed = JSON.parse(await file.text()) as WorkspaceSnapshot;
       if (!parsed.subjects || !parsed.workItems || !parsed.settings) throw new Error('This file is not a Sky Vault workspace export.');
-      if (demo) await persist(parsed, 'Workspace imported');
-      else await cloudAction('/import', 'POST', { confirm: 'REPLACE WORKSPACE', snapshot: parsed }, 'Workspace imported. Upload file bytes again in Cloud Mode.');
+      if (demo) await persist(parsed);
+      else await cloudAction('/import', 'POST', { confirm: 'REPLACE WORKSPACE', snapshot: parsed });
+      await notifyWorkspaceChange('Workspace imported. Upload file bytes again in Cloud Mode.', previous);
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'The selected backup is not valid JSON.'); }
   };
 
   const updateSettings = async (patch: Partial<WorkspaceSnapshot['settings']>) => {
     if (!snapshot) return;
     if (demo) await persist({ ...snapshot, settings: { ...snapshot.settings, ...patch, updatedAt: new Date().toISOString() } }, 'Settings saved');
-    else await cloudAction('/settings', 'PATCH', patch, 'Settings saved');
+    else await cloudAction('/settings', 'PATCH', { ...patch, expectedUpdatedAt: snapshot.settings.updatedAt }, 'Settings saved');
   };
 
   const resetDemo = async () => {
     setBusy(true);
+    const previous = snapshot;
     try {
       if (demo) {
         const next = await resetDemoWorkspace();
-        if (next) { setSnapshot(next); notify('Demo workspace restored to its seed data'); }
-      } else await cloudAction('/demo/reset', 'POST', {}, 'Demo workspace restored to its seed data');
+        if (next) { snapshotRef.current = next; setSnapshot(next); }
+      } else await cloudAction('/demo/reset', 'POST', {});
+      if (previous) await notifyWorkspaceChange('Demo workspace restored to its seed data', previous);
       setPendingTemplate(null); setStatusFilter('all'); setSubjectFilter('all');
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'Reset failed.'); }
     finally { setBusy(false); }
@@ -490,11 +642,13 @@ export function App() {
 
   const clearWorkspace = async () => {
     setBusy(true);
+    const previous = snapshot;
     try {
       if (demo) {
         const next = await clearDemoWorkspace();
-        if (next) { setSnapshot(next); notify('Workspace cleared'); }
-      } else await cloudAction('/workspace/clear', 'POST', { confirm: 'CLEAR WORKSPACE' }, 'Workspace cleared');
+        if (next) { snapshotRef.current = next; setSnapshot(next); }
+      } else await cloudAction('/workspace/clear', 'POST', { confirm: 'CLEAR WORKSPACE' });
+      if (previous) await notifyWorkspaceChange('Workspace cleared', previous);
       setPendingTemplate(null); setStatusFilter('all'); setSubjectFilter('all');
     } catch (cause) { notify(cause instanceof Error ? cause.message : 'Clear failed.'); }
     finally { setBusy(false); }
@@ -503,7 +657,7 @@ export function App() {
   const patchTemplate = async (template: TemplateRecord, patch: Partial<TemplateRecord>) => {
     if (!snapshot) return;
     if (demo) await persist({ ...snapshot, templates: snapshot.templates.map((row) => row.id === template.id ? { ...row, ...patch, updatedAt: new Date().toISOString() } : row) }, 'Template updated');
-    else await cloudAction(`/templates/${template.id}`, 'PATCH', patch, 'Template updated');
+    else await cloudAction(`/templates/${template.id}`, 'PATCH', { ...patch, expectedUpdatedAt: template.updatedAt }, 'Template updated');
   };
 
   const attachTemplateFile = async (file: File | null) => {
@@ -546,12 +700,15 @@ export function App() {
   const openSubjectWork = (id: string) => { setSubjectFilter(id); setStatusFilter('all'); navigate('/projects'); };
 
   return <>
+    <a className="skip-link" href="#main-content">Skip to content</a>
     <Shell snapshot={snapshot} section={activeSection} activeProjectCount={analytics.activeProjects} demo={demo} dark={dark} actorId={actorId}
-      mobileNav={mobileNav} collapsed={sidebarCollapsed} searchOpen={searchOpen} searchQuery={searchQuery} searchHits={searchHits} notificationsOpen={notificationsOpen} quickOpen={quickOpen}
+      mobileNav={mobileNav} collapsed={sidebarCollapsed} navExpanded={isMobileViewport ? mobileNav : !sidebarCollapsed} searchOpen={searchOpen} searchQuery={searchQuery} searchHits={searchHits} notificationsOpen={notificationsOpen} quickOpen={quickOpen}
       setMobileNav={setMobileNav} onToggleNav={toggleSidebar} setDark={setDark} setActorId={setActorId} setSearchOpen={setSearchOpen} setSearchQuery={setSearchQuery}
       setNotificationsOpen={setNotificationsOpen} setQuickOpen={setQuickOpen} navigate={navigate} openModal={openModal}
-      uploadFiles={async (files) => { await uploadFiles(files); }} currentTitle={selectedWork?.title} selectedWorkSubject={snapshot.subjects.find((subject) => subject.id === selectedWork?.subjectId)}>
-      {activeSection === 'home' && <Dashboard snapshot={snapshot} analytics={analytics} onAdd={openModal} onNavigate={navigate} onSubjectOpen={openSubjectWork} />}
+            uploadFiles={async (files) => { await uploadFiles(files); }} currentTitle={selectedWork?.title} selectedWorkSubject={snapshot.subjects.find((subject) => subject.id === selectedWork?.subjectId)}>
+      <Suspense fallback={<RouteFallback title={sectionTitles[activeSection]} />}>
+      {activeSection === 'home' && <Dashboard
+ snapshot={snapshot} analytics={analytics} onAdd={openModal} onNavigate={navigate} onSubjectOpen={openSubjectWork} />}
 
       {(activeSection === 'projects' || activeSection === 'assignments' || activeSection === 'labs') && (selectedWork
         ? <WorkDetail item={selectedWork} snapshot={snapshot} onBack={() => navigate(`/${selectedWork.type === 'project' ? 'projects' : selectedWork.type === 'assignment' ? 'assignments' : 'labs'}`)}
@@ -571,15 +728,20 @@ export function App() {
       {activeSection === 'activity' && <ActivityPage snapshot={snapshot} onTask={updateTask} onAddTask={() => openModal('task')} />}
       {activeSection === 'archive' && <ArchivePage snapshot={snapshot} onRestoreSubject={(subject) => void restoreSubject(subject)} onRestoreWork={(item) => void restoreWork(item)} onRestoreDocument={(doc) => void restoreDocument(doc)} />}
       {activeSection === 'settings' && <SettingsPage snapshot={snapshot} demo={demo} busy={busy} actions={{ exportWorkspace, importWorkspace, resetDemo, clearWorkspace, updateSettings }} />}
+      </Suspense>
     </Shell>
 
     {modal && <RecordForm kind={modal} target={modalTarget} snapshot={snapshot} busy={busy} onClose={closeModal} onSubmit={onSubmit} />}
     {pendingTemplate && <TemplateUploadModal name={pendingTemplate.name} busy={busy} onPick={(file) => { void attachTemplateFile(file); }} onClose={() => setPendingTemplate(null)} />}
-    {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
+    {toast && <div className="toast" role="status"><Check size={15} /><span>{toast.message}</span>{toast.action && <button type="button" className="toast-action" onClick={toast.action.onClick}>{toast.action.label}</button>}</div>}
     <p className="global-disclaimer"><ShieldAlert size={12} /> Public shared workspace · reported teammate names are not verified identities</p>
     {!snapshot.members.length && <span className="sr-only">No teammates have been added yet.</span>}
     {!snapshot.documents.length && <span className="sr-only">The vault is empty.</span>}
   </>;
+}
+
+function RouteFallback({ title }: { title: string }) {
+  return <div className="route-loading" role="status"><span className="route-loading-icon"><Compass size={20} /></span><div><b>Loading {title}</b><small>Bringing the command center into focus…</small></div><Activity size={14} /></div>;
 }
 
 function TemplateUploadModal({ name, busy, onPick, onClose }: { name: string; busy: boolean; onPick: (file: File | null) => void; onClose: () => void }) {

@@ -25,10 +25,18 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ['react', 'react-dom', 'react-router-dom'],
-          charts: ['recharts'],
-          motion: ['framer-motion'],
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('/@dnd-kit/')) return 'dnd';
+          if (id.includes('/@hookform/') || id.includes('/react-hook-form/') || id.includes('/zod/')) return 'forms';
+          if (id.includes('/@radix-ui/')) return 'radix';
+          if (id.includes('/date-fns/')) return 'dates';
+          if (id.includes('/framer-motion/') || id.includes('/motion-dom/') || id.includes('/motion-utils/')) return 'motion';
+          if (id.includes('/idb/')) return 'idb';
+          if (id.includes('/lucide-react/')) return 'icons';
+          if (id.includes('/recharts/')) return 'charts';
+          if (id.includes('/d3-') || id.includes('/victory-vendor/') || id.includes('/internmap/')) return 'chart-vendor';
+          if (id.includes('/@remix-run/') || id.includes('/react/') || id.includes('/react-dom/') || id.includes('/react-is/') || id.includes('/react-router') || id.includes('/scheduler/')) return 'react';
         },
       },
     },

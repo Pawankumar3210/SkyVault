@@ -12,6 +12,8 @@ export interface AppConfig {
   uploadExpirySeconds: number;
   downloadExpirySeconds: number;
   maxRetainedVersions: number;
+  pendingUploadTtlSeconds: number;
+  backupRetentionDays: number;
   corsOrigins: string[];
   problems: string[];
 }
@@ -54,6 +56,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     uploadExpirySeconds: numberFrom(env.UPLOAD_URL_EXPIRY_SECONDS, 300),
     downloadExpirySeconds: numberFrom(env.DOWNLOAD_URL_EXPIRY_SECONDS, 900),
     maxRetainedVersions: numberFrom(env.MAX_RETAINED_VERSIONS, 5),
+    pendingUploadTtlSeconds: numberFrom(env.PENDING_UPLOAD_TTL_SECONDS, 3600),
+    backupRetentionDays: numberFrom(env.BACKUP_RETENTION_DAYS, 7),
     corsOrigins: (env.CORS_ALLOWED_ORIGIN ?? '')
       .split(',')
       .map((origin) => origin.trim())

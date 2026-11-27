@@ -1,7 +1,20 @@
+export const PENDING_UPLOAD_PREFIX = 'pending/uploads/';
+
 export interface StoredObject {
   path: string;
   bytes: Uint8Array;
   contentType: string;
+}
+
+export interface CleanupOptions {
+  now: Date;
+  cutoff: Date;
+  preservePaths: Set<string>;
+}
+
+export interface CleanupResult {
+  deletedPaths: string[];
+  expiredTokens: number;
 }
 
 export interface ObjectStorage {
@@ -14,6 +27,7 @@ export interface ObjectStorage {
   delete(path: string): Promise<void>;
   consumeUpload?(token: string, bytes: Uint8Array, contentType: string): Promise<void>;
   readDownload?(token: string): Promise<StoredObject | null>;
+  cleanupExpiredUploads?(options: CleanupOptions): Promise<CleanupResult>;
 }
 
 interface PendingUpload {
@@ -34,10 +48,13 @@ export class MemoryObjectStorage implements ObjectStorage {
   private objects = new Map<string, StoredObject>();
   private uploads = new Map<string, PendingUpload>();
   private downloads = new Map<string, PendingDownload>();
+  private pendingObjects = new Map<string, { expiresAt: number }>();
 
   async createUploadUrl(path: string, contentType: string, expiresSeconds: number): Promise<string> {
     const token = crypto.randomUUID().replace(/-/g, '');
-    this.uploads.set(token, { path, contentType, expiresAt: Date.now() + expiresSeconds * 1000 });
+    const expiresAt = Date.now() + expiresSeconds * 1000;
+    this.uploads.set(token, { path, contentType, expiresAt });
+    if (path.startsWith(PENDING_UPLOAD_PREFIX)) this.pendingObjects.set(path, { expiresAt });
     return `/api/__mock_upload/${token}`;
   }
 
@@ -52,6 +69,7 @@ export class MemoryObjectStorage implements ObjectStorage {
     if (!pending || pending.expiresAt < Date.now()) throw new Error('Upload URL expired.');
     this.objects.set(pending.path, { path: pending.path, bytes, contentType: contentType || pending.contentType });
     this.uploads.delete(token);
+    this.pendingObjects.delete(pending.path);
   }
 
   async readDownload(token: string): Promise<StoredObject | null> {
@@ -78,5 +96,31 @@ export class MemoryObjectStorage implements ObjectStorage {
 
   async delete(path: string): Promise<void> {
     this.objects.delete(path);
+    this.pendingObjects.delete(path);
+  }
+
+  async cleanupExpiredUploads({ now, cutoff, preservePaths }: CleanupOptions): Promise<CleanupResult> {
+    let expiredTokens = 0;
+    for (const [token, pending] of this.uploads) {
+      if (pending.expiresAt <= now.getTime()) {
+        this.uploads.delete(token);
+        expiredTokens += 1;
+      }
+    }
+    for (const [token, pending] of this.downloads) {
+      if (pending.expiresAt <= now.getTime()) {
+        this.downloads.delete(token);
+        expiredTokens += 1;
+      }
+    }
+    const deletedPaths: string[] = [];
+    for (const [path, pending] of this.pendingObjects) {
+      if (pending.expiresAt <= cutoff.getTime() && !preservePaths.has(path)) {
+        this.objects.delete(path);
+        this.pendingObjects.delete(path);
+        deletedPaths.push(path);
+      }
+    }
+    return { deletedPaths, expiredTokens };
   }
 }

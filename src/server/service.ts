@@ -11,6 +11,7 @@ import {
   ChecklistInputSchema,
   ChecklistPatchSchema,
   DocumentMetaSchema,
+  DocumentPatchSchema,
   MemberInputSchema,
   MemberPatchSchema,
   SettingsPatchSchema,
@@ -22,11 +23,12 @@ import {
   TemplatePatchSchema,
   WorkItemInputSchema,
   WorkItemPatchSchema,
+  type DocumentPatch,
 } from '../shared/schemas';
 import { buildSemesterSeed, defaultSettings } from '../shared/seed';
 import type { AppConfig } from './config';
 import { ApiError } from './http';
-import type { ObjectStorage } from './storage/memory';
+import { PENDING_UPLOAD_PREFIX, type ObjectStorage } from './storage/memory';
 import type { DataStore } from './store/memory';
 import type {
   Activity,
@@ -36,6 +38,7 @@ import type {
   DocumentRecord,
   DocumentVersion,
   Subject,
+  WorkspaceBackup,
   Task,
   TeamMember,
   TemplateRecord,
@@ -57,6 +60,24 @@ const C = {
   checklists: 'checklists',
   settings: 'settings',
 } as const;
+
+const B = {
+  backups: 'workspaceBackups',
+} as const;
+
+function splitPatch<T extends { expectedUpdatedAt?: string }>(patch: T): { patch: Omit<T, 'expectedUpdatedAt'>; expectedUpdatedAt?: string } {
+  const { expectedUpdatedAt, ...rest } = patch;
+  return { patch: rest, expectedUpdatedAt };
+}
+
+function assertUnchanged(current: { updatedAt: string }, expectedUpdatedAt?: string) {
+  if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== current.updatedAt) {
+    throw new ApiError(409, 'CONFLICT', 'This record changed since you opened it. Reload and try again.', {
+      expectedUpdatedAt,
+      currentUpdatedAt: current.updatedAt,
+    });
+  }
+}
 
 function parse<T>(schema: { parse: (value: unknown) => T }, value: unknown): T {
   try {
@@ -135,8 +156,9 @@ export class WorkspaceService {
   }
 
   async updateSettings(input: unknown) {
-    const patch = parse(SettingsPatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(SettingsPatchSchema, input));
     const current = await this.settings();
+    assertUnchanged(current, expectedUpdatedAt);
     if (patch.maxFileSizeMb && patch.maxFileSizeMb > this.config.maxFileSizeMb) {
       throw new ApiError(400, 'VALIDATION_ERROR', `The server cap is ${this.config.maxFileSizeMb} MB.`);
     }
@@ -174,7 +196,8 @@ export class WorkspaceService {
 
   async updateSubject(id: string, input: unknown) {
     const current = await this.getSubject(id);
-    const patch = parse(SubjectPatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(SubjectPatchSchema, input));
+    assertUnchanged(current, expectedUpdatedAt);
     const next = applyDefined(current, { ...patch, code: patch.code?.toUpperCase(), updatedAt: this.now() });
     return this.store.save(C.subjects, next);
   }
@@ -250,7 +273,8 @@ export class WorkspaceService {
 
   async updateWorkItem(id: string, input: unknown, actorInput: unknown) {
     const current = await this.getWorkItem(id);
-    const patch = parse(WorkItemPatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(WorkItemPatchSchema, input));
+    assertUnchanged(current, expectedUpdatedAt);
     if (patch.subjectId) await this.getSubject(patch.subjectId);
     if (patch.teamMemberIds || patch.projectLeadId) await this.assertMembers(patch.teamMemberIds ?? current.teamMemberIds, patch.projectLeadId === undefined ? current.projectLeadId : patch.projectLeadId);
     const next = applyDefined<WorkItem>(current, { ...patch, updatedAt: this.now() } as Partial<WorkItem>);
@@ -321,7 +345,8 @@ export class WorkspaceService {
   async updateTask(id: string, input: unknown, actorInput: unknown) {
     const current = await this.store.get<Task>(C.tasks, id);
     if (!current || current.isDeleted) throw new ApiError(404, 'NOT_FOUND', 'Task not found.');
-    const patch = parse(TaskPatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(TaskPatchSchema, input));
+    assertUnchanged(current, expectedUpdatedAt);
     if (patch.assignedMemberId) await this.assertMembers([patch.assignedMemberId], null);
     const next = applyDefined(current, { ...patch, updatedAt: this.now() });
     if (patch.status === 'done') next.completedAt = current.completedAt ?? this.now();
@@ -382,7 +407,8 @@ export class WorkspaceService {
 
   async updateMember(id: string, input: unknown) {
     const current = await this.getMember(id);
-    const patch = parse(MemberPatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(MemberPatchSchema, input));
+    assertUnchanged(current, expectedUpdatedAt);
     return this.store.save(C.members, applyDefined(current, { ...patch, updatedAt: this.now() }));
   }
 
@@ -416,6 +442,12 @@ export class WorkspaceService {
       now: this.now(),
     }));
     return this.store.save(C.members, { ...member, isDeleted: true, deletedAt: this.now(), updatedAt: this.now() });
+  }
+
+  async restoreMember(id: string) {
+    const member = await this.store.get<TeamMember>(C.members, id);
+    if (!member) throw new ApiError(404, 'NOT_FOUND', 'Teammate not found.');
+    return this.store.save(C.members, { ...member, isDeleted: false, deletedAt: null, updatedAt: this.now() });
   }
 
   async listDocuments(query: Record<string, string | undefined>) {
@@ -459,14 +491,15 @@ export class WorkspaceService {
       storageMode: this.objects.kind === 'gcs' ? 'gcs' : 'indexeddb',
       actor: { memberId: actor.actorMemberId, displayName: actor.actorDisplayName },
     }, this.now());
-    document.storageObjectPath = buildObjectPath({
+    const objectPath = PENDING_UPLOAD_PREFIX + buildObjectPath({
       subjectCode: subject?.code,
       workItemId: data.workItemId,
       category: data.category,
       documentId: document.id,
       fileName: `${document.id}-v1-${data.originalName}`,
     });
-    document.pendingPath = document.storageObjectPath;
+    document.storageObjectPath = objectPath;
+    document.pendingPath = objectPath;
     document.storageMode = this.objects.kind === 'gcs' ? 'gcs' : 'indexeddb';
     await this.store.save(C.documents, document);
     const uploadUrl = await this.objects.createUploadUrl(document.storageObjectPath, inspection.mimeType, this.config.uploadExpirySeconds);
@@ -572,7 +605,7 @@ export class WorkspaceService {
     const inspection = inspectFile(data.originalName, data.mimeType ?? '', header, data.sizeBytes, this.config.maxFileSizeMb * 1024 * 1024);
     if (!inspection.ok) throw new ApiError(400, 'FILE_REJECTED', inspection.message);
     const subject = current.subjectId ? await this.store.get<Subject>(C.subjects, current.subjectId) : null;
-    const path = buildObjectPath({
+    const path = PENDING_UPLOAD_PREFIX + buildObjectPath({
       subjectCode: subject?.code,
       workItemId: current.workItemId,
       category: current.category,
@@ -608,18 +641,20 @@ export class WorkspaceService {
     return { url, fileName, expiresInSeconds: this.config.downloadExpirySeconds };
   }
 
-  async updateDocument(id: string, input: { displayName?: string; description?: string; tags?: string[]; subjectId?: string | null; workItemId?: string | null; isArchived?: boolean }) {
+  async updateDocument(id: string, input: DocumentPatch) {
     const document = await this.readyDocument(id);
-    if (input.displayName !== undefined && !input.displayName.trim()) throw new ApiError(400, 'VALIDATION_ERROR', 'A document needs a name.');
+    const { patch, expectedUpdatedAt } = splitPatch(parse(DocumentPatchSchema, input));
+    assertUnchanged(document, expectedUpdatedAt);
+    if (patch.displayName !== undefined && !patch.displayName.trim()) throw new ApiError(400, 'VALIDATION_ERROR', 'A document needs a name.');
     const next = {
       ...document,
-      displayName: input.displayName?.trim() || document.displayName,
-      description: input.description ?? document.description,
-      tags: input.tags ?? document.tags,
-      subjectId: input.subjectId === undefined ? document.subjectId : input.subjectId,
-      workItemId: input.workItemId === undefined ? document.workItemId : input.workItemId,
-      isArchived: input.isArchived ?? document.isArchived,
-      archivedAt: input.isArchived ? document.archivedAt ?? this.now() : input.isArchived === false ? null : document.archivedAt,
+      displayName: patch.displayName?.trim() || document.displayName,
+      description: patch.description ?? document.description,
+      tags: patch.tags ?? document.tags,
+      subjectId: patch.subjectId === undefined ? document.subjectId : patch.subjectId,
+      workItemId: patch.workItemId === undefined ? document.workItemId : patch.workItemId,
+      isArchived: patch.isArchived ?? document.isArchived,
+      archivedAt: patch.isArchived ? document.archivedAt ?? this.now() : patch.isArchived === false ? null : document.archivedAt,
       updatedAt: this.now(),
     };
     return this.store.save(C.documents, next);
@@ -731,7 +766,8 @@ export class WorkspaceService {
   async updateTemplate(id: string, input: unknown) {
     const current = await this.store.get<TemplateRecord>(C.templates, id);
     if (!current || current.isDeleted) throw new ApiError(404, 'NOT_FOUND', 'Template not found.');
-    const patch = parse(TemplatePatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(TemplatePatchSchema, input));
+    assertUnchanged(current, expectedUpdatedAt);
     const next = applyDefined<TemplateRecord>(current, { ...patch, updatedAt: this.now() } as Partial<TemplateRecord>);
     if (patch.checklistItems) {
       next.checklistItems = patch.checklistItems.map((item) => ({
@@ -748,6 +784,12 @@ export class WorkspaceService {
     const current = await this.store.get<TemplateRecord>(C.templates, id);
     if (!current || current.isDeleted) throw new ApiError(404, 'NOT_FOUND', 'Template not found.');
     return this.store.save(C.templates, { ...current, isDeleted: true, deletedAt: this.now(), updatedAt: this.now() });
+  }
+
+  async restoreTemplate(id: string) {
+    const current = await this.store.get<TemplateRecord>(C.templates, id);
+    if (!current) throw new ApiError(404, 'NOT_FOUND', 'Template not found.');
+    return this.store.save(C.templates, { ...current, isDeleted: false, deletedAt: null, updatedAt: this.now() });
   }
 
   async listChecklists(workItemId?: string) {
@@ -775,7 +817,8 @@ export class WorkspaceService {
   async updateChecklist(id: string, input: unknown) {
     const current = await this.store.get<Checklist>(C.checklists, id);
     if (!current || current.isDeleted) throw new ApiError(404, 'NOT_FOUND', 'Checklist not found.');
-    const patch = parse(ChecklistPatchSchema, input);
+    const { patch, expectedUpdatedAt } = splitPatch(parse(ChecklistPatchSchema, input));
+    assertUnchanged(current, expectedUpdatedAt);
     const next = applyDefined<Checklist>(current, { ...patch, updatedAt: this.now() } as Partial<Checklist>);
     if (patch.items) {
       next.items = patch.items.map((item) => ({ id: item.id ?? createId('item'), label: item.label, done: item.done ?? false, group: item.group ?? '' }));
@@ -828,11 +871,96 @@ export class WorkspaceService {
     return buildExport(await this.snapshot(), this.now());
   }
 
+  async createBackup(reason = 'manual') {
+    const createdAt = this.now();
+    const expiresAt = new Date(Date.parse(createdAt) + this.config.backupRetentionDays * 86_400_000).toISOString();
+    const backup: WorkspaceBackup = {
+      id: createId('bak'),
+      reason: String(reason).slice(0, 80),
+      createdAt,
+      expiresAt,
+      snapshot: await this.snapshot(),
+    };
+    await this.store.save(B.backups, backup);
+    return { id: backup.id, reason: backup.reason, createdAt, expiresAt };
+  }
+
+  async listBackups() {
+    const backups = await this.store.list<WorkspaceBackup>(B.backups);
+    return backups
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((backup) => ({ id: backup.id, reason: backup.reason, createdAt: backup.createdAt, expiresAt: backup.expiresAt }));
+  }
+
+  async restoreBackup(id: string) {
+    const backup = await this.store.get<WorkspaceBackup>(B.backups, id);
+    if (!backup) throw new ApiError(404, 'NOT_FOUND', 'Backup not found.');
+    if (Date.parse(backup.expiresAt) <= Date.now()) throw new ApiError(410, 'BACKUP_EXPIRED', 'This backup has expired.');
+    await this.createBackup('before_restore');
+    const skippedCloudFiles = await this.applySnapshot(backup.snapshot);
+    return { restored: true, backupId: id, skippedCloudFiles };
+  }
+
+  async cleanupBackups() {
+    const now = Date.now();
+    const backups = await this.store.list<WorkspaceBackup>(B.backups);
+    const expired = backups.filter((backup) => Date.parse(backup.expiresAt) <= now);
+    for (const backup of expired) await this.store.remove(B.backups, backup.id);
+    return { removed: expired.length };
+  }
+
+  async cleanupPendingUploads() {
+    const now = this.now();
+    const cutoff = new Date(Date.now() - this.config.pendingUploadTtlSeconds * 1000);
+    const documents = await this.store.list<DocumentRecord>(C.documents);
+    const versions = await this.store.list<DocumentVersion>(C.versions);
+    const preservePaths = new Set<string>();
+    for (const document of documents) {
+      if (document.status === 'ready') preservePaths.add(document.storageObjectPath);
+      else if (document.status === 'pending' && document.pendingPath && Date.parse(document.updatedAt) > cutoff.getTime()) preservePaths.add(document.pendingPath);
+    }
+    for (const version of versions) preservePaths.add(version.storageObjectPath);
+    const stale = documents.filter((document) => document.status === 'pending' && Date.parse(document.updatedAt) <= cutoff.getTime());
+    const deletedPaths = new Set<string>();
+    for (const document of stale) {
+      await this.store.save(C.documents, {
+        ...document,
+        status: 'failed',
+        pendingPath: null,
+        pendingOriginalName: null,
+        pendingMimeType: null,
+        pendingSizeBytes: null,
+        updatedAt: now,
+      });
+      for (const path of [document.pendingPath, document.storageObjectPath]) {
+        if (path?.startsWith(PENDING_UPLOAD_PREFIX) && !preservePaths.has(path)) {
+          await this.objects.delete(path);
+          deletedPaths.add(path);
+        }
+      }
+    }
+    const storage = await this.objects.cleanupExpiredUploads?.({ now: new Date(now), cutoff, preservePaths }) ?? { deletedPaths: [] as string[], expiredTokens: 0 };
+    for (const path of storage.deletedPaths) deletedPaths.add(path);
+    return {
+      markedFailed: stale.length,
+      deletedPaths: deletedPaths.size,
+      expiredTokens: storage.expiredTokens,
+      ttlSeconds: this.config.pendingUploadTtlSeconds,
+      cutoff: cutoff.toISOString(),
+    };
+  }
+
+  async maintenanceCleanup() {
+    const backups = await this.cleanupBackups();
+    const uploads = await this.cleanupPendingUploads();
+    return { backups, uploads };
+  }
+
   async importWorkspace(body: { confirm?: string; snapshot?: WorkspaceSnapshot }) {
     if (body.confirm !== 'REPLACE WORKSPACE') throw new ApiError(400, 'CONFIRMATION_REQUIRED', 'Type REPLACE WORKSPACE to import over the current records.');
     const snapshot = body.snapshot;
     if (!snapshot?.subjects || !snapshot.workItems || !snapshot.settings) throw new ApiError(400, 'VALIDATION_ERROR', 'The backup is missing workspace records.');
-    const importedFiles = snapshot.documents ?? [];
+    await this.createBackup('before_import');
     if (this.objects.kind === 'gcs') {
       const currentDocuments = await this.store.list<DocumentRecord>(C.documents);
       const currentVersions = await this.store.list<DocumentVersion>(C.versions);
@@ -842,21 +970,8 @@ export class WorkspaceService {
       }
       for (const version of currentVersions) await this.objects.delete(version.storageObjectPath);
     }
-    await this.clearCollections();
-    for (const subject of snapshot.subjects) await this.store.save(C.subjects, subject);
-    for (const item of snapshot.workItems) await this.store.save(C.workItems, item);
-    for (const task of snapshot.tasks ?? []) await this.store.save(C.tasks, task);
-    for (const member of snapshot.members ?? []) await this.store.save(C.members, member);
-    // Structured exports do not include bytes. Never restore client-supplied object paths in Cloud Mode.
-    if (this.objects.kind !== 'gcs') {
-      for (const document of importedFiles) await this.store.save(C.documents, document);
-      for (const version of snapshot.versions ?? []) await this.store.save(C.versions, version);
-    }
-    for (const template of snapshot.templates ?? []) await this.store.save(C.templates, template);
-    for (const checklist of snapshot.checklists ?? []) await this.store.save(C.checklists, checklist);
-    for (const activity of snapshot.activities ?? []) await this.store.save(C.activities, activity);
-    await this.store.save(C.settings, { ...defaultSettings(this.now()), ...snapshot.settings, id: 'workspace' });
-    return { imported: true, skippedCloudFiles: this.objects.kind === 'gcs' ? importedFiles.length : 0 };
+    const skippedCloudFiles = await this.applySnapshot(snapshot);
+    return { imported: true, skippedCloudFiles };
   }
 
   async seedDemo(actorInput: unknown) {
@@ -893,6 +1008,7 @@ export class WorkspaceService {
   }
 
   async resetDemo() {
+    await this.createBackup('before_demo_reset');
     for (const collection of Object.values(C)) {
       const rows = await this.store.list<{ id: string; isDemo?: boolean; storageObjectPath?: string }>(collection);
       for (const row of rows) {
@@ -907,6 +1023,7 @@ export class WorkspaceService {
 
   async clearWorkspace(confirm?: string) {
     if (confirm !== 'CLEAR WORKSPACE') throw new ApiError(400, 'CONFIRMATION_REQUIRED', 'Type CLEAR WORKSPACE to remove the shared records.');
+    await this.createBackup('before_clear');
     const documents = await this.store.list<DocumentRecord>(C.documents);
     const versions = await this.store.list<DocumentVersion>(C.versions);
     for (const document of documents) {
@@ -924,6 +1041,23 @@ export class WorkspaceService {
       const rows = await this.store.list<{ id: string }>(collection);
       for (const row of rows) await this.store.remove(collection, row.id);
     }
+  }
+
+  private async applySnapshot(snapshot: WorkspaceSnapshot) {
+    await this.clearCollections();
+    for (const subject of snapshot.subjects) await this.store.save(C.subjects, subject);
+    for (const item of snapshot.workItems) await this.store.save(C.workItems, item);
+    for (const task of snapshot.tasks ?? []) await this.store.save(C.tasks, task);
+    for (const member of snapshot.members ?? []) await this.store.save(C.members, member);
+    if (this.objects.kind !== 'gcs') {
+      for (const document of snapshot.documents ?? []) await this.store.save(C.documents, document);
+      for (const version of snapshot.versions ?? []) await this.store.save(C.versions, version);
+    }
+    for (const template of snapshot.templates ?? []) await this.store.save(C.templates, template);
+    for (const checklist of snapshot.checklists ?? []) await this.store.save(C.checklists, checklist);
+    for (const activity of snapshot.activities ?? []) await this.store.save(C.activities, activity);
+    await this.store.save(C.settings, { ...defaultSettings(this.now()), ...snapshot.settings, id: 'workspace' });
+    return this.objects.kind === 'gcs' && snapshot.documents ? snapshot.documents.length : 0;
   }
 
   private async readyDocument(id: string) {

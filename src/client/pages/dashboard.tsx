@@ -1,13 +1,17 @@
-import { useEffect, useState, type CSSProperties } from 'react';
-import { Activity, ArrowUpRight, CalendarDays, Check, CheckSquare, CloudUpload, FolderKanban, Plus, ShieldAlert, Sparkles, Users, Zap, type LucideIcon } from 'lucide-react';
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { lazy, Suspense, useEffect, useState, type CSSProperties } from 'react';
+import { Activity, ArrowUpRight, CalendarDays, Check, CheckSquare, CloudUpload, FolderKanban, Plus, ShieldAlert, Users, Zap, type LucideIcon } from 'lucide-react';
 import { buildAnalytics } from '@shared/analytics';
 import { TERMINAL_STATUSES } from '@shared/constants';
 import { formatDateKey } from '@shared/dates';
-import type { Activity as ActivityRecord, WorkspaceSnapshot } from '@shared/types';
+import type { WorkspaceSnapshot } from '@shared/types';
 import type { ModalKind } from '../contracts';
-import { dueLabel, dueTone, humanStatus, initials, timeAgo } from '../lib/format';
+import { dueLabel, dueTone, humanStatus, initials } from '../lib/format';
+import { ActivityFeed } from '../components/activity-feed';
 import { Button, EmptyState, Eyebrow, Panel, PanelHead, Progress, TextLink } from '../components/ui';
+
+export { ActivityFeed };
+
+const WorkloadChart = lazy(() => import('../components/charts/workload-chart').then((module) => ({ default: module.WorkloadChart })));
 
 interface Props {
   snapshot: WorkspaceSnapshot;
@@ -95,17 +99,7 @@ export function Dashboard({ snapshot, analytics, onAdd, onNavigate, onSubjectOpe
       <Panel className="workload-panel">
         <PanelHead title="Workload by subject" subtitle="Recorded projects, assignments and labs" action={<TextLink onClick={() => onNavigate('/analytics')}>Analytics <ArrowUpRight size={13} /></TextLink>} />
         <div className="chart-medium">
-          {analytics.workloadBySubject.some((row) => row.total > 0) ? <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={analytics.workloadBySubject.slice(0, 7)} margin={{ top: 8, right: 4, left: -24, bottom: 0 }}>
-              <CartesianGrid vertical={false} stroke="var(--line-soft)" />
-              <XAxis dataKey="code" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 10 }} />
-              <YAxis axisLine={false} tickLine={false} allowDecimals={false} tick={{ fill: 'var(--muted)', fontSize: 10 }} />
-              <Tooltip cursor={{ fill: 'var(--surface-2)' }} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 8, color: 'var(--text)', fontSize: 12 }} />
-              <Bar dataKey="projects" name="Projects" stackId="work" fill="#47C9FF" />
-              <Bar dataKey="assignments" name="Assignments" stackId="work" fill="#8DAAFF" />
-              <Bar dataKey="labs" name="Labs" stackId="work" fill="#5FD5AE" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer> : <EmptyState title="No workload data" text="Add academic work to see the workload chart." />}
+          {analytics.workloadBySubject.some((row) => row.total > 0) ? <Suspense fallback={<div className="chart-loading" />}><WorkloadChart data={analytics.workloadBySubject.slice(0, 7)} /></Suspense> : <EmptyState title="No workload data" text="Add academic work to see the workload chart." />}
         </div>
         <div className="chart-key"><span><i className="key-blue" />Projects</span><span><i className="key-violet" />Assignments</span><span><i className="key-mint" />Labs</span></div>
       </Panel>
@@ -146,11 +140,6 @@ function OrbitGlyph() {
     <circle cx="80" cy="32" r="3" fill="var(--accent)" fillOpacity=".7" />
     <path d="M10 80h17M133 80h17M80 10v17M80 133v17" stroke="var(--line)" />
   </svg>;
-}
-
-export function ActivityFeed({ records }: { records: ActivityRecord[] }) {
-  if (!records.length) return <EmptyState title="No activity yet" text="Workspace changes are recorded here as they happen." />;
-  return <div className="activity-feed">{records.map((record) => <div className="activity-item" key={record.id}><span className="activity-icon"><Sparkles size={14} /></span><span className="activity-copy"><b>{record.description}</b><small>{record.actorDisplayName || 'Unattributed'} · {timeAgo(record.createdAt)}</small></span></div>)}</div>;
 }
 
 export function MetricAvatar({ name }: { name: string }) { return <span className="avatar">{initials(name)}</span>; }

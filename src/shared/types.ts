@@ -306,6 +306,14 @@ export interface WorkspaceSnapshot {
   settings: WorkspaceSettings;
 }
 
+export interface WorkspaceBackup {
+  id: string;
+  reason: string;
+  createdAt: string;
+  expiresAt: string;
+  snapshot: WorkspaceSnapshot;
+}
+
 export interface SearchHit {
   id: string;
   type: 'subject' | 'project' | 'assignment' | 'lab' | 'member' | 'task' | 'document' | 'template';

@@ -1,5 +1,6 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { X, type LucideIcon } from 'lucide-react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface ButtonProps {
   children: ReactNode;
@@ -72,15 +73,9 @@ function humanize(value: string) {
 }
 
 export function Modal({ eyebrow = 'SEMESTER 5 WORKSPACE', title, onClose, children, footer, wide = false }: { eyebrow?: string; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const target = ref.current?.querySelector<HTMLElement>('input:not([type="hidden"]), select, textarea, button');
-    target?.focus();
-    return () => previous?.focus?.();
-  }, []);
+  const ref = useFocusTrap<HTMLDivElement>();
   return <div className="scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className={`dialog ${wide ? 'dialog-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
+    <div className={`dialog ${wide ? 'dialog-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} ref={ref} tabIndex={-1}>
       <div className="dialog-head"><div><Eyebrow>{eyebrow}</Eyebrow><h2>{title}</h2></div><IconButton label="Close dialog" icon={X} onClick={onClose} /></div>
       <div className="dialog-body">{children}</div>
       {footer && <div className="dialog-foot">{footer}</div>}

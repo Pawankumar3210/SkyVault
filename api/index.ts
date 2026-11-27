@@ -46,6 +46,9 @@ app.get('/api/health', (_req, res) => send(res, { mode: config.mode, configured:
 app.get('/api/workspace', async (_req, res, next) => { try { send(res, await service.snapshot()); } catch (error) { next(error); } });
 app.get('/api/settings', async (_req, res, next) => { try { send(res, await service.settings()); } catch (error) { next(error); } });
 app.patch('/api/settings', async (req, res, next) => { try { send(res, await service.updateSettings(req.body)); } catch (error) { next(error); } });
+app.get('/api/workspace/backups', async (_req, res, next) => { try { send(res, await service.listBackups()); } catch (error) { next(error); } });
+app.post('/api/workspace/backup', async (req, res, next) => { try { send(res, await service.createBackup(typeof req.body?.reason === 'string' ? req.body.reason : 'manual'), 'Workspace backup created'); } catch (error) { next(error); } });
+app.post('/api/workspace/restore', async (req, res, next) => { try { send(res, await service.restoreBackup(String(req.body?.backupId ?? '')), 'Workspace backup restored'); } catch (error) { next(error); } });
 app.get('/api/subjects', async (_req, res, next) => { try { send(res, await service.listSubjects()); } catch (error) { next(error); } });
 app.post('/api/subjects', async (req, res, next) => { try { send(res, await service.createSubject(req.body, actor(req)), 'Subject created'); } catch (error) { next(error); } });
 app.patch('/api/subjects/:id', async (req, res, next) => { try { send(res, await service.updateSubject(id(req), req.body)); } catch (error) { next(error); } });
@@ -65,6 +68,7 @@ app.get('/api/team-members', async (_req, res, next) => { try { send(res, await 
 app.post('/api/team-members', async (req, res, next) => { try { send(res, await service.createMember(req.body, actor(req))); } catch (error) { next(error); } });
 app.patch('/api/team-members/:id', async (req, res, next) => { try { send(res, await service.updateMember(id(req), req.body)); } catch (error) { next(error); } });
 app.delete('/api/team-members/:id', async (req, res, next) => { try { send(res, await service.deleteMember(id(req), req.body.reassignTo, actor(req))); } catch (error) { next(error); } });
+app.post('/api/team-members/:id/restore', async (req, res, next) => { try { send(res, await service.restoreMember(id(req)), 'Teammate restored'); } catch (error) { next(error); } });
 app.get('/api/documents', async (req, res, next) => { try { send(res, await service.listDocuments(query(req))); } catch (error) { next(error); } });
 app.post('/api/documents/upload-url', async (req, res, next) => { try { send(res, await service.createUpload(req.body, actor(req))); } catch (error) { next(error); } });
 app.post('/api/documents/:id/complete', async (req, res, next) => { try { send(res, await service.completeUpload(id(req), actor(req))); } catch (error) { next(error); } });
@@ -79,6 +83,7 @@ app.get('/api/templates', async (_req, res, next) => { try { send(res, await ser
 app.post('/api/templates', async (req, res, next) => { try { send(res, await service.createTemplate(req.body, actor(req))); } catch (error) { next(error); } });
 app.patch('/api/templates/:id', async (req, res, next) => { try { send(res, await service.updateTemplate(id(req), req.body)); } catch (error) { next(error); } });
 app.delete('/api/templates/:id', async (req, res, next) => { try { send(res, await service.deleteTemplate(id(req))); } catch (error) { next(error); } });
+app.post('/api/templates/:id/restore', async (req, res, next) => { try { send(res, await service.restoreTemplate(id(req)), 'Template restored'); } catch (error) { next(error); } });
 app.get('/api/checklists', async (req, res, next) => { try { send(res, await service.listChecklists(typeof req.query.workItemId === 'string' ? req.query.workItemId : undefined)); } catch (error) { next(error); } });
 app.post('/api/checklists', async (req, res, next) => { try { send(res, await service.createChecklist(req.body, actor(req))); } catch (error) { next(error); } });
 app.patch('/api/checklists/:id', async (req, res, next) => { try { send(res, await service.updateChecklist(id(req), req.body)); } catch (error) { next(error); } });
@@ -92,6 +97,7 @@ app.post('/api/import', async (req, res, next) => { try { send(res, await servic
 app.post('/api/demo/seed', async (req, res, next) => { try { send(res, await service.seedDemo(actor(req))); } catch (error) { next(error); } });
 app.post('/api/demo/reset', async (_req, res, next) => { try { send(res, await service.resetDemo()); } catch (error) { next(error); } });
 app.post('/api/workspace/clear', async (req, res, next) => { try { send(res, await service.clearWorkspace(req.body.confirm)); } catch (error) { next(error); } });
+app.post('/api/maintenance/cleanup', async (_req, res, next) => { try { send(res, await service.maintenanceCleanup(), 'Maintenance cleanup completed'); } catch (error) { next(error); } });
 
 app.put('/api/__mock_upload/:token', express.raw({ type: '*/*', limit: `${config.maxFileSizeMb}mb` }), async (req, res, next) => {
   try {

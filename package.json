@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:cloud": "tsx scripts/smoke-cloud.ts",
     "seed:cloud": "tsx scripts/seed-cloud.ts"
   },
   "dependencies": {

@@ -1,10 +1,11 @@
-import type { ChangeEvent, ReactNode } from 'react';
+import { useEffect, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, Archive, ArrowUpRight, Bell, BookOpen, CalendarDays, CheckSquare, ChevronRight, Cloud, CloudUpload, Command, FileText, FolderKanban, LayoutDashboard, ListTodo, Menu, Moon, Plus, Search, Settings, ShieldCheck, Sun, Users, X, Zap, type LucideIcon } from 'lucide-react';
 import type { Subject, WorkspaceSnapshot } from '@shared/types';
 import { TERMINAL_STATUSES } from '@shared/constants';
 import { classifyDeadline, formatDateKey } from '@shared/dates';
 import { todayKey } from '../lib/format';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import type { ModalKind, Section } from '../contracts';
 import { Button, EmptyState, Eyebrow, IconButton } from './ui';
 
@@ -49,6 +50,7 @@ interface ShellProps {
   actorId: string;
   mobileNav: boolean;
   collapsed: boolean;
+  navExpanded: boolean;
   searchOpen: boolean;
   searchQuery: string;
   searchHits: SearchHit[];
@@ -70,17 +72,17 @@ interface ShellProps {
 }
 
 export function Shell(props: ShellProps) {
-  const { children, snapshot, section, activeProjectCount, demo, dark, actorId, mobileNav, collapsed, searchOpen, searchQuery, searchHits,
+  const { children, snapshot, section, activeProjectCount, demo, dark, actorId, mobileNav, collapsed, navExpanded, searchOpen, searchQuery, searchHits,
     notificationsOpen, quickOpen, setMobileNav, onToggleNav, setDark, setActorId, setSearchOpen, setSearchQuery, setNotificationsOpen,
     setQuickOpen, navigate, openModal, uploadFiles, currentTitle, selectedWorkSubject } = props;
 
   const go = (path: string) => { navigate(path); setMobileNav(false); setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); };
   const breadcrumb = currentTitle ?? sectionTitles[section];
-  const navHidden = mobileNav || collapsed;
+  const navToggleOn = !navExpanded;
 
   return <div className={`app-frame ${collapsed ? 'is-collapsed' : ''}`}>
     {mobileNav && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
-    <aside className={`sidebar ${mobileNav ? 'is-open' : ''}`}>
+    <aside id="primary-sidebar" className={`sidebar ${mobileNav ? 'is-open' : ''}`}>
       <button className="brand" onClick={() => go('/')} aria-label="Sky Vault overview">
         <span className="brand-symbol" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
         <span className="brand-copy"><strong>SKY VAULT</strong><small>ACADEMIC COMMAND</small></span>
@@ -97,21 +99,21 @@ export function Shell(props: ShellProps) {
       <nav className="side-nav" aria-label="Primary">
         {navGroups.map((group) => <div className="nav-group" key={group.label}>
           <div className="nav-caption">{group.label}</div>
-          {group.items.map(({ id, label, icon: Icon }) => <Link key={id} to={`/${id === 'home' ? '' : id}`} className={`nav-link ${section === id ? 'is-active' : ''}`} onClick={() => { setMobileNav(false); setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); }} aria-current={section === id ? 'page' : undefined}>
+          {group.items.map(({ id, label, icon: Icon }) => <Link key={id} to={`/${id === 'home' ? '' : id}`} className={`nav-link ${section === id ? 'is-active' : ''}`} onClick={() => { setMobileNav(false); setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); }} aria-current={section === id ? 'page' : undefined} aria-label={label} title={label} data-tooltip={label}>
             <Icon size={16} strokeWidth={1.8} /><span>{label}</span>{id === 'projects' && activeProjectCount > 0 && <em>{activeProjectCount}</em>}
           </Link>)}
         </div>)}
       </nav>
 
       <div className="sidebar-foot">
-        <Link className={`nav-link ${section === 'settings' ? 'is-active' : ''}`} to="/settings" onClick={() => { setMobileNav(false); setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); }}><Settings size={16} strokeWidth={1.8} /><span>Settings</span></Link>
+        <Link className={`nav-link ${section === 'settings' ? 'is-active' : ''}`} to="/settings" onClick={() => { setMobileNav(false); setSearchOpen(false); setQuickOpen(false); setNotificationsOpen(false); }} aria-label="Settings" title="Settings" data-tooltip="Settings"><Settings size={16} strokeWidth={1.8} /><span>Settings</span></Link>
         <div className="mode-tile"><span className={`mode-symbol ${demo ? 'is-demo' : ''}`}><Cloud size={16} /></span><span><b>{demo ? 'Demo mode' : 'Cloud mode'}</b><small>{demo ? 'Stored in this browser' : 'Firestore + Cloud Storage'}</small></span><i className={demo ? 'is-demo' : ''} /></div>
       </div>
     </aside>
 
     <div className="main-frame">
       <header className="topbar">
-        <IconButton className={`nav-toggle ${navHidden ? 'is-on' : ''}`} label={navHidden ? 'Close navigation' : 'Open navigation'} icon={Menu} onClick={onToggleNav} />
+        <button type="button" className={`icon-btn nav-toggle ${navToggleOn ? 'is-on' : ''}`} aria-label={navToggleOn ? 'Close navigation' : 'Open navigation'} title={navToggleOn ? 'Close navigation' : 'Open navigation'} aria-expanded={navExpanded} aria-controls="primary-sidebar" onClick={onToggleNav}><Menu size={16} strokeWidth={1.9} /></button>
         <div className="breadcrumb"><button onClick={() => go('/')}>Semester 5</button><ChevronRight size={13} /><span>{breadcrumb}</span></div>
         <div className="topbar-actions">
           <button className="search-trigger" onClick={() => setSearchOpen(!searchOpen)} aria-expanded={searchOpen}><Search size={15} /><span>Search workspace</span><kbd>⌘K</kbd></button>
@@ -126,30 +128,55 @@ export function Shell(props: ShellProps) {
       {notificationsOpen && <NoticePanel snapshot={snapshot} onClose={() => setNotificationsOpen(false)} onOpen={go} />}
       {quickOpen && <QuickCreate onPick={(kind) => { setQuickOpen(false); if (kind === 'upload') return; openModal(kind); }} onUpload={(files) => { void uploadFiles(files); setQuickOpen(false); }} onClose={() => setQuickOpen(false)} />}
 
-      <main className="page-content">{children}</main>
+      <main id="main-content" className="page-content">{children}</main>
       <footer className="app-footnote"><ShieldCheck size={13} /> Public shared workspace · reported teammate names are not verified identities · {selectedWorkSubject?.code ?? 'Semester 5'}</footer>
     </div>
   </div>;
 }
 
 function SearchPalette({ query, setQuery, hits, onPick, onClose }: { query: string; setQuery: (value: string) => void; hits: SearchHit[]; onPick: (hit: SearchHit) => void; onClose: () => void }) {
-  return <div className="popover search-popover" role="dialog" aria-label="Search workspace">
-    <div className="search-field"><Search size={17} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search subjects, work, people, tasks, files…" onKeyDown={(event) => { if (event.key === 'Enter' && hits[0]) onPick(hits[0]); if (event.key === 'Escape') onClose(); }} /><kbd>ESC</kbd></div>
-    <div className="popover-body">
+  const ref = useFocusTrap<HTMLDivElement>();
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => setActiveIndex(0), [query]);
+  const activeHit = hits.length ? hits[Math.min(activeIndex, hits.length - 1)] : null;
+  const activeId = activeHit ? `search-hit-${activeHit.id}` : undefined;
+  const move = (offset: number) => {
+    if (!hits.length) return;
+    setActiveIndex((current) => {
+      const clamped = Math.min(current, hits.length - 1);
+      return (clamped + offset + hits.length) % hits.length;
+    });
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+    else if (event.key === 'Home') { event.preventDefault(); setActiveIndex(0); }
+    else if (event.key === 'End') { event.preventDefault(); setActiveIndex(Math.max(0, hits.length - 1)); }
+    else if (event.key === 'Enter' && activeHit) { event.preventDefault(); onPick(activeHit); }
+    else if (event.key === 'Escape') onClose();
+  };
+  return <div className="popover search-popover" role="dialog" aria-modal="true" aria-label="Search workspace" ref={ref} tabIndex={-1}>
+    <div className="search-field">
+      <Search size={17} />
+      <input autoFocus value={query} role="combobox" aria-label="Search workspace" aria-autocomplete="list" aria-expanded={hits.length > 0} aria-controls="search-results" aria-activedescendant={activeId} autoComplete="off" onChange={(event) => setQuery(event.target.value)} placeholder="Search subjects, work, people, tasks, files…" onKeyDown={onKeyDown} />
+      <kbd>ESC</kbd>
+    </div>
+    <div className="popover-body" id="search-results" role="listbox" aria-label="Search results">
       {!query.trim() && <div className="search-hint"><Command size={15} /><span>Type to search the shared Semester 5 workspace.</span></div>}
       {query.trim() && !hits.length && <EmptyState title="No matches" text="Nothing in this workspace matches that search." />}
-      {hits.map((hit) => <button className="search-result" key={hit.id} onClick={() => onPick(hit)}><span className="result-icon"><hit.icon size={15} /></span><span className="result-copy"><b>{hit.title}</b><small>{hit.subtitle}</small></span><ArrowUpRight size={14} /></button>)}
+      {hits.map((hit, index) => <button type="button" className={`search-result ${activeHit?.id === hit.id ? 'is-active' : ''}`} id={`search-hit-${hit.id}`} role="option" aria-selected={activeHit?.id === hit.id} key={hit.id} onMouseEnter={() => setActiveIndex(index)} onClick={() => onPick(hit)}><span className="result-icon"><hit.icon size={15} /></span><span className="result-copy"><b>{hit.title}</b><small>{hit.subtitle}</small></span><ArrowUpRight size={14} /></button>)}
     </div>
   </div>;
 }
 
 function NoticePanel({ snapshot, onClose, onOpen }: { snapshot: WorkspaceSnapshot; onClose: () => void; onOpen: (path: string) => void }) {
+  const ref = useFocusTrap<HTMLDivElement>();
   const key = todayKey();
   const notices = [
     ...snapshot.workItems.filter((item) => !item.isDeleted && !item.isArchived && !TERMINAL_STATUSES.has(item.status) && ['overdue', 'today', 'three'].includes(classifyDeadline(item.dueDate, item.status, key, TERMINAL_STATUSES))).map((item) => ({ id: item.id, title: item.title, due: item.dueDate!, type: item.dueDate! < key ? 'Overdue' : 'Due soon', path: `/projects/${item.id}` })),
     ...snapshot.tasks.filter((task) => !task.isDeleted && task.status !== 'done' && task.dueDate && task.dueDate <= key).map((task) => ({ id: task.id, title: task.title, due: task.dueDate!, type: 'Task due', path: `/projects/${task.workItemId}` })),
   ].sort((a, b) => a.due.localeCompare(b.due));
-  return <div className="popover notice-popover" role="dialog" aria-label="Deadline notices">
+  return <div className="popover notice-popover" role="dialog" aria-modal="true" aria-label="Deadline notices" ref={ref} tabIndex={-1}>
     <div className="popover-head"><Eyebrow>NOTICES</Eyebrow><h2>Deadline watch</h2><IconButton label="Close notices" icon={X} onClick={onClose} /></div>
     <p className="popover-note">Derived from current records, not a notification service.</p>
     <div className="popover-body">
@@ -159,6 +186,7 @@ function NoticePanel({ snapshot, onClose, onOpen }: { snapshot: WorkspaceSnapsho
 }
 
 function QuickCreate({ onPick, onUpload, onClose }: { onPick: (kind: Exclude<ModalKind, null> | 'upload') => void; onUpload: (files: File[] | FileList | null) => void; onClose: () => void }) {
+  const ref = useFocusTrap<HTMLDivElement>();
   const options: { kind: Exclude<ModalKind, null> | 'upload'; label: string; detail: string; icon: LucideIcon }[] = [
     { kind: 'project', label: 'New project', detail: 'Group or individual work', icon: FolderKanban },
     { kind: 'assignment', label: 'New assignment', detail: 'Coursework with a deadline', icon: CheckSquare },
@@ -170,7 +198,7 @@ function QuickCreate({ onPick, onUpload, onClose }: { onPick: (kind: Exclude<Mod
     { kind: 'upload', label: 'Upload document', detail: 'Add to the Cloud Vault', icon: CloudUpload },
   ];
   return <div className="scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="quick-menu" role="dialog" aria-modal="true" aria-label="Quick create">
+    <div className="quick-menu" role="dialog" aria-modal="true" aria-label="Quick create" ref={ref} tabIndex={-1}>
       <div className="dialog-head"><div><Eyebrow>QUICK CREATE</Eyebrow><h2>What are you adding?</h2></div><IconButton label="Close" icon={X} onClick={onClose} /></div>
       <div className="quick-grid">{options.map(({ kind, label, detail, icon: Icon }) => kind === 'upload'
         ? <label className="quick-option" key={kind}><span className="quick-icon"><Icon size={17} /></span><span><b>{label}</b><small>{detail}</small></span><input type="file" multiple hidden onChange={(event: ChangeEvent<HTMLInputElement>) => onUpload(event.target.files)} /></label>

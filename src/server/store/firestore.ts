@@ -2,7 +2,7 @@ import { Firestore, FieldValue, Timestamp } from '@google-cloud/firestore';
 import type { AppConfig } from '../config';
 import type { DataStore } from './memory';
 
-const TIMESTAMP_FIELDS = new Set(['createdAt', 'updatedAt', 'deletedAt', 'archivedAt', 'completedAt', 'lastAccessedAt', 'readAt']);
+const TIMESTAMP_FIELDS = new Set(['createdAt', 'updatedAt', 'deletedAt', 'archivedAt', 'completedAt', 'lastAccessedAt', 'readAt', 'expiresAt']);
 
 function stripUndefined(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripUndefined);

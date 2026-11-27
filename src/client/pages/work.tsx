@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Activity, ArrowLeft, ArrowUpRight, CalendarDays, Check, CheckSquare, CloudUpload, FileText, FolderKanban, Plus, Trash2, Users, Zap, type LucideIcon } from 'lucide-react';
 import { DEFAULT_STATUS_OPTIONS, TERMINAL_STATUSES } from '@shared/constants';
 import { formatDateKey } from '@shared/dates';
@@ -7,7 +7,7 @@ import type { Checklist, Task, WorkspaceSnapshot, WorkItem } from '@shared/types
 import type { DeleteKind, ModalKind, WorkView } from '../contracts';
 import { dueLabel, dueTone, humanStatus } from '../lib/format';
 import { Avatar, Badge, Button, EmptyState, Eyebrow, IconButton, Panel, PanelHead, PriorityPill, Progress, StatusPill } from '../components/ui';
-import { ActivityFeed } from './dashboard';
+import { ActivityFeed } from '../components/activity-feed';
 
 interface WorkPageProps {
   section: 'projects' | 'assignments' | 'labs';
@@ -43,7 +43,7 @@ export function WorkPage({ section, work, snapshot, view, setView, filter, setFi
 
     <Panel className="work-panel">
       <div className="work-toolbar">
-        <div className="view-switch" role="tablist" aria-label="Work views">{(['list', 'board', 'timeline', 'calendar'] as const).map((option) => <button role="tab" aria-selected={view === option} className={view === option ? 'is-active' : ''} key={option} onClick={() => setView(option)}>{option === 'board' ? 'Board' : humanStatus(option)}</button>)}</div>
+        <div className="view-switch" role="tablist" aria-label="Work views">{(['list', 'board', 'timeline', 'calendar'] as const).map((option) => <button role="tab" aria-selected={view === option} tabIndex={view === option ? 0 : -1} className={view === option ? 'is-active' : ''} key={option} onClick={() => setView(option)} onKeyDown={(event) => tabKeyboard(event, ['list', 'board', 'timeline', 'calendar'], view, (value) => setView(value as WorkView))}>{option === 'board' ? 'Board' : humanStatus(option)}</button>)}</div>
         <div className="toolbar-filters"><label className="filter-select"><select aria-label="Filter by status" value={filter === 'all' || snapshot.settings.statuses.some((status) => status.id === filter) ? filter : 'all'} onChange={(event) => setFilter(event.target.value)}><option value="all">All statuses</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}</select></label>
           <label className="filter-select"><select aria-label="Filter by subject" value={snapshot.subjects.some((subject) => subject.id === subjectFilter) ? subjectFilter : 'all'} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{snapshot.subjects.filter((subject) => !subject.isDeleted).map((subject) => <option key={subject.id} value={subject.id}>{subject.code}</option>)}</select></label></div>
       </div>
@@ -58,6 +58,7 @@ export function WorkPage({ section, work, snapshot, view, setView, filter, setFi
             <div className="kanban-card-top"><PriorityPill priority={item.priority} /><IconButton label={`Delete ${item.title}`} icon={Trash2} onClick={() => actions.remove('work', item)} className="tiny" /></div>
             <button className="record-link" onClick={() => actions.open(item)}>{item.title}</button>
             <small>{snapshot.subjects.find((subject) => subject.id === item.subjectId)?.code ?? 'Semester 5'} · {humanStatus(item.type)}</small>
+            <select className="status-select" aria-label={`Status for ${item.title}`} value={item.status} onChange={(event) => void actions.update(item, { status: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}</select>
             <Progress value={item.progress} />
             <div className="kanban-foot"><span><Users size={12} /> {item.teamMemberIds.length}</span><span className={dueTone(item.dueDate, item.status)}>{dueLabel(item.dueDate, item.status)}</span></div>
           </article>)}{!rows.length && <p className="kanban-empty">Drop work here</p>}</div>
@@ -126,7 +127,7 @@ export function WorkDetail({ item, snapshot, onBack, onUpdate, onEdit, onTask, o
     <Panel className="detail-progress"><div className="detail-progress-head"><span>Overall progress</span><b>{item.progress}%</b></div><Progress value={item.progress} /><small>{tasks.filter((task) => task.status === 'done').length} of {tasks.length} tasks completed</small></Panel>
 
     <Panel className="detail-panel">
-      <div className="detail-tabs" role="tablist">{tabs.map(({ label, icon: Icon, count }) => <button role="tab" aria-selected={tab === label} className={tab === label ? 'is-active' : ''} key={label} onClick={() => setTab(label)}><Icon size={14} />{label}{count !== undefined && <em>{count}</em>}</button>)}</div>
+      <div className="detail-tabs" role="tablist" aria-label="Work sections">{tabs.map(({ label, icon: Icon, count }) => <button role="tab" aria-selected={tab === label} tabIndex={tab === label ? 0 : -1} className={tab === label ? 'is-active' : ''} key={label} onClick={() => setTab(label)} onKeyDown={(event) => tabKeyboard(event, tabs.map((entry) => entry.label), tab, setTab)}><Icon size={14} />{label}{count !== undefined && <em>{count}</em>}</button>)}</div>
 
       {tab === 'Overview' && <div className="detail-body detail-columns"><div>
         <h2>About this work</h2><p>{item.description || 'No description has been added yet.'}</p>
@@ -159,5 +160,18 @@ export function WorkDetail({ item, snapshot, onBack, onUpdate, onEdit, onTask, o
       {tab === 'Activity' && <div className="detail-body"><ActivityFeed records={snapshot.activities.filter((record) => record.relatedEntityId === item.id || tasks.some((task) => task.id === record.relatedEntityId)).slice(0, 15)} /></div>}
     </Panel>
   </>;
+}
+
+function tabKeyboard(event: KeyboardEvent<HTMLButtonElement>, values: string[], current: string, onChange: (value: string) => void) {
+  const index = values.indexOf(current);
+  const next = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? (index + 1) % values.length
+    : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? (index - 1 + values.length) % values.length
+      : event.key === 'Home' ? 0
+        : event.key === 'End' ? values.length - 1 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  onChange(values[next]);
+  const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+  buttons?.[next]?.focus();
 }
 

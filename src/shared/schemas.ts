@@ -14,6 +14,10 @@ const shortText = (max: number) => z.string().trim().min(1).max(max);
 const optionalText = (max: number) => z.string().trim().max(max);
 const tags = z.array(z.string().trim().min(1).max(40)).max(12);
 
+export const ExpectedUpdatedAtSchema = z.object({
+  expectedUpdatedAt: z.string().datetime().optional(),
+});
+
 export const SubjectInputSchema = z.object({
   name: shortText(120),
   code: shortText(16),
@@ -145,20 +149,30 @@ export const SettingsPatchSchema = z.object({
     .optional(),
   roles: z.array(shortText(80)).min(1).max(24).optional(),
   showActorDisclaimer: z.boolean().optional(),
-});
+}).extend(ExpectedUpdatedAtSchema.shape);
+
+export const DocumentPatchSchema = z.object({
+  displayName: z.string().max(160).optional(),
+  description: optionalText(2000).optional(),
+  tags: tags.optional(),
+  subjectId: id.nullable().optional(),
+  workItemId: id.nullable().optional(),
+  isArchived: z.boolean().optional(),
+}).extend(ExpectedUpdatedAtSchema.shape);
 
 export const ActorSchema = z.object({
   memberId: id.nullable().optional(),
   displayName: z.string().trim().max(120).optional(),
 });
 
-export const WorkItemPatchSchema = WorkItemInputSchema.partial();
-export const TaskPatchSchema = TaskInputSchema.partial();
-export const MemberPatchSchema = MemberInputSchema.partial();
-export const SubjectPatchSchema = SubjectInputSchema.partial();
-export const TemplatePatchSchema = TemplateInputSchema.partial();
-export const ChecklistPatchSchema = ChecklistInputSchema.partial();
+export const WorkItemPatchSchema = WorkItemInputSchema.partial().extend(ExpectedUpdatedAtSchema.shape);
+export const TaskPatchSchema = TaskInputSchema.partial().extend(ExpectedUpdatedAtSchema.shape);
+export const MemberPatchSchema = MemberInputSchema.partial().extend(ExpectedUpdatedAtSchema.shape);
+export const SubjectPatchSchema = SubjectInputSchema.partial().extend(ExpectedUpdatedAtSchema.shape);
+export const TemplatePatchSchema = TemplateInputSchema.partial().extend(ExpectedUpdatedAtSchema.shape);
+export const ChecklistPatchSchema = ChecklistInputSchema.partial().extend(ExpectedUpdatedAtSchema.shape);
 
+export type ExpectedUpdatedAtInput = z.infer<typeof ExpectedUpdatedAtSchema>;
 export type SubjectInput = z.infer<typeof SubjectInputSchema>;
 export type WorkItemInput = z.infer<typeof WorkItemInputSchema>;
 export type TaskInput = z.infer<typeof TaskInputSchema>;
@@ -167,3 +181,4 @@ export type DocumentMetaInput = z.infer<typeof DocumentMetaSchema>;
 export type TemplateInput = z.infer<typeof TemplateInputSchema>;
 export type ChecklistInput = z.infer<typeof ChecklistInputSchema>;
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
+export type DocumentPatch = z.infer<typeof DocumentPatchSchema>;
